@@ -63,8 +63,8 @@ class TestMermaidRenderer:
         MermaidRenderer().render(graph, out)
         content = out.read_text()
         assert "subgraph" in content
-        assert "a_py" in content
-        assert "b_py" in content
+        assert "sg_a_" in content
+        assert "sg_b_" in content
 
     def test_orphans_excluded_by_default(self, tmp_path: Path):
         fn_orphan = _fn("orphan", "main.py")

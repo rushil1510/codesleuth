@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -35,17 +36,29 @@ class MermaidRenderer(BaseRenderer):
         output_path.write_text(markdown, encoding="utf-8")
 
     # ------------------------------------------------------------------
-    # Diagram construction
+    # Node ID generation — short IDs to keep diagram text small
     # ------------------------------------------------------------------
 
+    def _make_id_map(self, nodes: list[FunctionNode]) -> dict[str, str]:
+        """Create a mapping from FunctionNode hash-key to a short id like ``n0``, ``n1``."""
+        id_map: dict[str, str] = {}
+        for i, fn in enumerate(nodes):
+            key = self._fn_key(fn)
+            if key not in id_map:
+                id_map[key] = f"n{i}"
+        return id_map
+
     @staticmethod
-    def _node_id(fn: FunctionNode) -> str:
-        """Generate a unique, Mermaid-safe node id."""
-        raw = f"{fn.file_path}_{fn.qualified_name}_{fn.line_number}"
-        return re.sub(r"[^a-zA-Z0-9_]", "_", raw)
+    def _fn_key(fn: FunctionNode) -> str:
+        """Stable hash key for a FunctionNode."""
+        return f"{fn.file_path}::{fn.qualified_name}::{fn.line_number}"
+
+    # ------------------------------------------------------------------
+    # Labels — compact but informative
+    # ------------------------------------------------------------------
 
     def _node_label(self, fn: FunctionNode, max_doc: int) -> str:
-        """Build an HTML-like label with function name, file, and docstring."""
+        """Build a compact label: name, location, and optional short docstring."""
         parts: list[str] = []
 
         # Function name (bold)
@@ -54,25 +67,35 @@ class MermaidRenderer(BaseRenderer):
             display_name = f"{fn.class_name}.{fn.name}"
         parts.append(f"<b>{self._escape(display_name)}</b>")
 
-        # File path and line (smaller / italic)
-        loc = f"{fn.file_path}:{fn.line_number}"
-        parts.append(f"<i>{self._escape(loc)}</i>")
+        # File:line (compact)
+        fname = Path(fn.file_path).name
+        parts.append(f"<i>{self._escape(fname)}:{fn.line_number}</i>")
 
-        # Parameters
-        if fn.params:
-            params_str = ", ".join(fn.params[:5])
-            if len(fn.params) > 5:
-                params_str += ", …"
-            parts.append(f"({self._escape(params_str)})")
-
-        # Docstring excerpt
+        # Docstring excerpt (short)
         if fn.docstring:
-            doc = fn.docstring.replace("\n", " ").strip()
+            doc = fn.docstring.split("\n")[0].strip()
             if len(doc) > max_doc:
                 doc = doc[: max_doc - 1] + "…"
-            parts.append(f"<i>{self._escape(doc)}</i>")
+            if doc:
+                parts.append(f"<i>{self._escape(doc)}</i>")
 
         return "<br/>".join(parts)
+
+    # ------------------------------------------------------------------
+    # Subgraph ID
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _subgraph_id(file_path: Path) -> str:
+        """Short, deterministic subgraph id from a file path."""
+        h = hashlib.md5(str(file_path).encode()).hexdigest()[:6]
+        name = Path(file_path).stem
+        safe = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+        return f"sg_{safe}_{h}"
+
+    # ------------------------------------------------------------------
+    # Diagram construction
+    # ------------------------------------------------------------------
 
     def _build_diagram(
         self,
@@ -84,18 +107,21 @@ class MermaidRenderer(BaseRenderer):
         lines: list[str] = [f"flowchart {direction}"]
 
         # Determine which nodes to include.
-        connected_ids: set[str] = set()
+        connected_keys: set[str] = set()
         for edge in graph.resolved_edges:
-            connected_ids.add(self._node_id(edge.caller))
-            connected_ids.add(self._node_id(edge.resolved_callee))  # type: ignore[arg-type]
+            connected_keys.add(self._fn_key(edge.caller))
+            connected_keys.add(self._fn_key(edge.resolved_callee))  # type: ignore[arg-type]
 
         nodes_to_render = graph.nodes if include_orphans else [
-            fn for fn in graph.nodes if self._node_id(fn) in connected_ids
+            fn for fn in graph.nodes if self._fn_key(fn) in connected_keys
         ]
 
         if not nodes_to_render:
             lines.append("    NoNodes[\"No call relationships detected\"]")
             return lines
+
+        # Build short-ID mapping.
+        id_map = self._make_id_map(nodes_to_render)
 
         # Group nodes by file for subgraphs.
         by_file: dict[Path, list[FunctionNode]] = defaultdict(list)
@@ -105,20 +131,21 @@ class MermaidRenderer(BaseRenderer):
         # Render subgraphs.
         for file_path in sorted(by_file.keys()):
             fns = by_file[file_path]
-            subgraph_id = re.sub(r"[^a-zA-Z0-9_]", "_", str(file_path))
-            lines.append(f"    subgraph {subgraph_id}[\"{self._escape(str(file_path))}\"]")
+            sg_id = self._subgraph_id(file_path)
+            sg_label = self._escape(str(file_path))
+            lines.append(f"    subgraph {sg_id}[\"{sg_label}\"]")
             for fn in sorted(fns, key=lambda f: f.line_number):
-                nid = self._node_id(fn)
+                nid = id_map[self._fn_key(fn)]
                 label = self._node_label(fn, max_doc)
                 lines.append(f"        {nid}[\"{label}\"]")
             lines.append("    end")
 
         # Render edges.
         for edge in graph.resolved_edges:
-            src = self._node_id(edge.caller)
-            dst = self._node_id(edge.resolved_callee)  # type: ignore[arg-type]
-            edge_label = f"L{edge.line_number}"
-            lines.append(f"    {src} -->|{edge_label}| {dst}")
+            src = id_map.get(self._fn_key(edge.caller))
+            dst = id_map.get(self._fn_key(edge.resolved_callee))  # type: ignore[arg-type]
+            if src and dst:
+                lines.append(f"    {src} -->|L{edge.line_number}| {dst}")
 
         return lines
 
@@ -129,10 +156,19 @@ class MermaidRenderer(BaseRenderer):
     @staticmethod
     def _wrap_markdown(diagram_lines: list[str]) -> str:
         body = "\n".join(diagram_lines)
+        # Set maxTextSize high enough for large codebases.
+        init_directive = (
+            "%%{init: {"
+            '"theme": "default", '
+            '"maxTextSize": 200000, '
+            '"flowchart": {"useMaxWidth": true}'
+            "}}%%"
+        )
         return (
             "# CodeSleuth — Call Graph\n\n"
             "_Auto-generated by [CodeSleuth](https://github.com/codesleuth)._\n\n"
             "```mermaid\n"
+            f"{init_directive}\n"
             f"{body}\n"
             "```\n"
         )
