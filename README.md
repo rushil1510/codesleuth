@@ -24,6 +24,9 @@ python3 -m codesleuth /path/to/project -o call_graph.md
 |---|---|---|
 | `-o` / `--output` | `call_graph.md` | Output file path (single mode) or directory (split mode) |
 | `--split` / `--no-split` | `False` | Split diagram by connected components into separate files |
+| `--png` / `--no-png` | `False` | Export diagrams as PNG images (requires `mmdc`) |
+| `--width` | `1920` | PNG image width in pixels |
+| `--height` | `1080` | PNG image height in pixels |
 | `--direction` | `TD` | Mermaid direction (`TD` top-down, `LR` left-right) |
 | `--max-docstring-length` | `80` | Max docstring label characters |
 | `--include-orphans` | `False` | Show functions with no call edges |
@@ -48,7 +51,24 @@ codesleuth ./my-project -o graphs --split
 #   ...
 ```
 
+### PNG Export (`--png`)
+Convert diagrams directly to PNG images at a specified resolution. Requires [`mmdc`](https://github.com/mermaid-js/mermaid-cli) (mermaid-cli):
+```bash
+# Install mmdc
+npm install -g @mermaid-js/mermaid-cli
+
+# Single file → PNG
+codesleuth ./my-project -o diagram.md --png
+
+# Custom resolution
+codesleuth ./my-project -o diagram.md --png --width 3840 --height 2160
+
+# Split mode + PNG (each component gets its own PNG)
+codesleuth ./my-project -o graphs --split --png --width 2560 --height 1440
+```
+
 ## Supported Languages
+
 
 - **Python** (`.py`) — via stdlib `ast`
 - **JavaScript** (`.js`, `.jsx`) — via `tree-sitter`

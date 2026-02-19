@@ -40,6 +40,26 @@ def _build_registry() -> ParserRegistry:
     help="Split into one file per connected component (output becomes a directory).",
 )
 @click.option(
+    "--png/--no-png",
+    default=False,
+    show_default=True,
+    help="Also export diagrams as PNG images (requires mmdc).",
+)
+@click.option(
+    "--width",
+    type=int,
+    default=1920,
+    show_default=True,
+    help="PNG image width in pixels.",
+)
+@click.option(
+    "--height",
+    type=int,
+    default=1080,
+    show_default=True,
+    help="PNG image height in pixels.",
+)
+@click.option(
     "--direction",
     type=click.Choice(["TD", "LR"], case_sensitive=False),
     default="TD",
@@ -68,6 +88,9 @@ def main(
     target_dir: str,
     output_path: str,
     split: bool,
+    png: bool,
+    width: int,
+    height: int,
     direction: str,
     max_docstring_length: int,
     include_orphans: bool,
@@ -102,16 +125,40 @@ def main(
         include_orphans=include_orphans,
     )
 
+    md_files: list[Path] = []
+
     if split:
         out_dir = Path(output_path).with_suffix("")  # strip .md if given
         click.echo(f"📂 Splitting into components → {out_dir}/")
         written = renderer.render_components(graph, out_dir, **opts)
         click.echo(f"✅ Wrote {len(written)} files (including index.md).")
+        md_files = [f for f in written if f.name.startswith("component_")]
     else:
         out = Path(output_path)
         click.echo(f"📄 Rendering → {out}")
         renderer.render(graph, out, **opts)
         click.echo("✅ Done!")
+        md_files = [out]
+
+    # PNG export.
+    if png:
+        from codesleuth.png_exporter import export_png, mmdc_available
+
+        if not mmdc_available():
+            click.echo(
+                "⚠️  mmdc not found. Install it with:\n"
+                "   npm install -g @mermaid-js/mermaid-cli",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        click.echo(f"🖼️  Exporting {len(md_files)} diagram(s) to PNG ({width}×{height}) …")
+        for md_file in md_files:
+            try:
+                png_path = export_png(md_file, width=width, height=height)
+                click.echo(f"   ✅ {png_path}")
+            except Exception as exc:
+                click.echo(f"   ❌ {md_file.name}: {exc}", err=True)
 
 
 if __name__ == "__main__":
