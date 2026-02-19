@@ -83,3 +83,57 @@ class CallGraph:
     def resolved_edges(self) -> list[CallEdge]:
         """Return only edges whose callee was successfully resolved."""
         return [e for e in self.edges if e.resolved_callee is not None]
+
+    def connected_components(self) -> list[CallGraph]:
+        """Split graph into connected components (undirected) and return each as a CallGraph.
+
+        Returns components sorted largest-first by node count.
+        """
+        # Build adjacency using node indices.
+        node_to_idx: dict[int, int] = {}
+        for i, fn in enumerate(self.nodes):
+            node_to_idx[id(fn)] = i
+
+        # Union-Find
+        parent = list(range(len(self.nodes)))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Union nodes connected by resolved edges.
+        for edge in self.resolved_edges:
+            caller_idx = node_to_idx.get(id(edge.caller))
+            callee_idx = node_to_idx.get(id(edge.resolved_callee))
+            if caller_idx is not None and callee_idx is not None:
+                union(caller_idx, callee_idx)
+
+        # Group nodes by component root.
+        from collections import defaultdict
+        components: dict[int, list[int]] = defaultdict(list)
+        for i in range(len(self.nodes)):
+            components[find(i)].append(i)
+
+        # Build sub-graphs.
+        result: list[CallGraph] = []
+        for indices in components.values():
+            idx_set = set(indices)
+            comp_nodes = [self.nodes[i] for i in indices]
+            node_ids = {id(n) for n in comp_nodes}
+            comp_edges = [
+                e for e in self.edges
+                if id(e.caller) in node_ids
+            ]
+            result.append(CallGraph(nodes=comp_nodes, edges=comp_edges))
+
+        # Sort largest component first.
+        result.sort(key=lambda g: len(g.nodes), reverse=True)
+        return result
+

@@ -28,10 +28,16 @@ def _build_registry() -> ParserRegistry:
     "-o",
     "--output",
     "output_path",
-    type=click.Path(dir_okay=False),
+    type=click.Path(),
     default="call_graph.md",
     show_default=True,
-    help="Output Markdown file path.",
+    help="Output file (single mode) or directory (split mode).",
+)
+@click.option(
+    "--split/--no-split",
+    default=False,
+    show_default=True,
+    help="Split into one file per connected component (output becomes a directory).",
 )
 @click.option(
     "--direction",
@@ -61,6 +67,7 @@ def _build_registry() -> ParserRegistry:
 def main(
     target_dir: str,
     output_path: str,
+    split: bool,
     direction: str,
     max_docstring_length: int,
     include_orphans: bool,
@@ -68,7 +75,6 @@ def main(
 ) -> None:
     """Scan TARGET_DIR and generate a Mermaid call-graph diagram."""
     root = Path(target_dir)
-    out = Path(output_path)
 
     click.echo(f"🔍 Scanning {root} …")
 
@@ -89,18 +95,25 @@ def main(
     unresolved = len(graph.edges) - resolved
     click.echo(f"   Resolved {resolved} edges ({unresolved} unresolved).")
 
-    click.echo(f"📄 Rendering → {out}")
     renderer = MermaidRenderer()
-    renderer.render(
-        graph,
-        out,
+    opts = dict(
         direction=direction.upper(),
         max_docstring_length=max_docstring_length,
         include_orphans=include_orphans,
     )
 
-    click.echo("✅ Done!")
+    if split:
+        out_dir = Path(output_path).with_suffix("")  # strip .md if given
+        click.echo(f"📂 Splitting into components → {out_dir}/")
+        written = renderer.render_components(graph, out_dir, **opts)
+        click.echo(f"✅ Wrote {len(written)} files (including index.md).")
+    else:
+        out = Path(output_path)
+        click.echo(f"📄 Rendering → {out}")
+        renderer.render(graph, out, **opts)
+        click.echo("✅ Done!")
 
 
 if __name__ == "__main__":
     main()
+
