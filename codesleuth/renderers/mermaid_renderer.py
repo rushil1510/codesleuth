@@ -1,0 +1,152 @@
+"""Mermaid flowchart renderer with rich labels and subgraphs."""
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from pathlib import Path
+
+from codesleuth.models import CallGraph, FunctionNode
+from codesleuth.renderers.base_renderer import BaseRenderer
+
+
+class MermaidRenderer(BaseRenderer):
+    """Renders a :class:`CallGraph` as a Mermaid flowchart inside a Markdown file."""
+
+    def render(self, graph: CallGraph, output_path: Path, **options) -> None:
+        """Write the Mermaid diagram to *output_path*.
+
+        Options
+        -------
+        direction : str
+            ``'TD'`` (top-down) or ``'LR'`` (left-right). Default ``'TD'``.
+        max_docstring_length : int
+            Truncate docstrings to this many characters. Default ``80``.
+        include_orphans : bool
+            If ``True``, include nodes that have no incoming or outgoing edges.
+            Default ``False``.
+        """
+        direction: str = options.get("direction", "TD")
+        max_doc: int = options.get("max_docstring_length", 80)
+        include_orphans: bool = options.get("include_orphans", False)
+
+        lines = self._build_diagram(graph, direction, max_doc, include_orphans)
+        markdown = self._wrap_markdown(lines)
+        output_path.write_text(markdown, encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Diagram construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _node_id(fn: FunctionNode) -> str:
+        """Generate a unique, Mermaid-safe node id."""
+        raw = f"{fn.file_path}_{fn.qualified_name}_{fn.line_number}"
+        return re.sub(r"[^a-zA-Z0-9_]", "_", raw)
+
+    def _node_label(self, fn: FunctionNode, max_doc: int) -> str:
+        """Build an HTML-like label with function name, file, and docstring."""
+        parts: list[str] = []
+
+        # Function name (bold)
+        display_name = fn.name
+        if fn.class_name:
+            display_name = f"{fn.class_name}.{fn.name}"
+        parts.append(f"<b>{self._escape(display_name)}</b>")
+
+        # File path and line (smaller / italic)
+        loc = f"{fn.file_path}:{fn.line_number}"
+        parts.append(f"<i>{self._escape(loc)}</i>")
+
+        # Parameters
+        if fn.params:
+            params_str = ", ".join(fn.params[:5])
+            if len(fn.params) > 5:
+                params_str += ", …"
+            parts.append(f"({self._escape(params_str)})")
+
+        # Docstring excerpt
+        if fn.docstring:
+            doc = fn.docstring.replace("\n", " ").strip()
+            if len(doc) > max_doc:
+                doc = doc[: max_doc - 1] + "…"
+            parts.append(f"<i>{self._escape(doc)}</i>")
+
+        return "<br/>".join(parts)
+
+    def _build_diagram(
+        self,
+        graph: CallGraph,
+        direction: str,
+        max_doc: int,
+        include_orphans: bool,
+    ) -> list[str]:
+        lines: list[str] = [f"flowchart {direction}"]
+
+        # Determine which nodes to include.
+        connected_ids: set[str] = set()
+        for edge in graph.resolved_edges:
+            connected_ids.add(self._node_id(edge.caller))
+            connected_ids.add(self._node_id(edge.resolved_callee))  # type: ignore[arg-type]
+
+        nodes_to_render = graph.nodes if include_orphans else [
+            fn for fn in graph.nodes if self._node_id(fn) in connected_ids
+        ]
+
+        if not nodes_to_render:
+            lines.append("    NoNodes[\"No call relationships detected\"]")
+            return lines
+
+        # Group nodes by file for subgraphs.
+        by_file: dict[Path, list[FunctionNode]] = defaultdict(list)
+        for fn in nodes_to_render:
+            by_file[fn.file_path].append(fn)
+
+        # Render subgraphs.
+        for file_path in sorted(by_file.keys()):
+            fns = by_file[file_path]
+            subgraph_id = re.sub(r"[^a-zA-Z0-9_]", "_", str(file_path))
+            lines.append(f"    subgraph {subgraph_id}[\"{self._escape(str(file_path))}\"]")
+            for fn in sorted(fns, key=lambda f: f.line_number):
+                nid = self._node_id(fn)
+                label = self._node_label(fn, max_doc)
+                lines.append(f"        {nid}[\"{label}\"]")
+            lines.append("    end")
+
+        # Render edges.
+        for edge in graph.resolved_edges:
+            src = self._node_id(edge.caller)
+            dst = self._node_id(edge.resolved_callee)  # type: ignore[arg-type]
+            edge_label = f"L{edge.line_number}"
+            lines.append(f"    {src} -->|{edge_label}| {dst}")
+
+        return lines
+
+    # ------------------------------------------------------------------
+    # Markdown wrapper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _wrap_markdown(diagram_lines: list[str]) -> str:
+        body = "\n".join(diagram_lines)
+        return (
+            "# CodeSleuth — Call Graph\n\n"
+            "_Auto-generated by [CodeSleuth](https://github.com/codesleuth)._\n\n"
+            "```mermaid\n"
+            f"{body}\n"
+            "```\n"
+        )
+
+    # ------------------------------------------------------------------
+    # Sanitisation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _escape(text: str) -> str:
+        """Escape characters that break Mermaid syntax."""
+        return (
+            text.replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
