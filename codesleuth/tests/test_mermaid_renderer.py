@@ -63,8 +63,8 @@ class TestMermaidRenderer:
         MermaidRenderer().render(graph, out)
         content = out.read_text()
         assert "subgraph" in content
-        assert "a_py" in content
-        assert "b_py" in content
+        assert "sg_a_" in content
+        assert "sg_b_" in content
 
     def test_orphans_excluded_by_default(self, tmp_path: Path):
         fn_orphan = _fn("orphan", "main.py")
@@ -95,3 +95,76 @@ class TestMermaidRenderer:
         MermaidRenderer().render(graph, out, direction="LR")
         content = out.read_text()
         assert "flowchart LR" in content
+
+    def test_init_directive_present(self, tmp_path: Path):
+        """The maxTextSize init directive should be in the output."""
+        fn_a = _fn("x", "m.py")
+        fn_b = _fn("y", "m.py")
+        edge = CallEdge(caller=fn_a, callee_name="y", file_path=Path("m.py"), line_number=1, resolved_callee=fn_b)
+        graph = CallGraph(nodes=[fn_a, fn_b], edges=[edge])
+        out = tmp_path / "output.md"
+
+        MermaidRenderer().render(graph, out)
+        content = out.read_text()
+        assert "maxTextSize" in content
+        assert "200000" in content
+
+    def test_class_name_in_label(self, tmp_path: Path):
+        """Class methods should show ClassName.method in the label."""
+        fn = _fn("process", "m.py", class_name="Engine")
+        fn_b = _fn("run", "m.py")
+        edge = CallEdge(caller=fn, callee_name="run", file_path=Path("m.py"), line_number=1, resolved_callee=fn_b)
+        graph = CallGraph(nodes=[fn, fn_b], edges=[edge])
+        out = tmp_path / "output.md"
+
+        MermaidRenderer().render(graph, out)
+        content = out.read_text()
+        assert "Engine.process" in content
+
+    def test_render_components_creates_directory(self, tmp_path: Path):
+        """render_components creates the output directory and writes files."""
+        fn_a = _fn("a", "x.py")
+        fn_b = _fn("b", "x.py")
+        fn_c = _fn("c", "y.py")
+        e1 = CallEdge(caller=fn_a, callee_name="b", file_path=Path("x.py"), line_number=1, resolved_callee=fn_b)
+
+        graph = CallGraph(nodes=[fn_a, fn_b, fn_c], edges=[e1])
+        out_dir = tmp_path / "components"
+
+        written = MermaidRenderer().render_components(graph, out_dir)
+        assert out_dir.exists()
+        assert (out_dir / "index.md").exists()
+        assert len(written) >= 2  # index + at least 1 component
+
+    def test_render_components_index_links(self, tmp_path: Path):
+        """The index.md should link to component files."""
+        fn_a = _fn("a", "x.py")
+        fn_b = _fn("b", "x.py")
+        e1 = CallEdge(caller=fn_a, callee_name="b", file_path=Path("x.py"), line_number=1, resolved_callee=fn_b)
+
+        graph = CallGraph(nodes=[fn_a, fn_b], edges=[e1])
+        out_dir = tmp_path / "comp"
+
+        MermaidRenderer().render_components(graph, out_dir)
+        index = (out_dir / "index.md").read_text()
+        assert "component_" in index
+        assert "Functions" in index
+        assert "Edges" in index
+
+    def test_render_components_isolates_disconnected(self, tmp_path: Path):
+        """Disconnected subgraphs become separate component files."""
+        fn_a = _fn("a", "x.py")
+        fn_b = _fn("b", "x.py")
+        fn_c = _fn("c", "y.py")
+        fn_d = _fn("d", "y.py")
+        e1 = CallEdge(caller=fn_a, callee_name="b", file_path=Path("x.py"), line_number=1, resolved_callee=fn_b)
+        e2 = CallEdge(caller=fn_c, callee_name="d", file_path=Path("y.py"), line_number=1, resolved_callee=fn_d)
+
+        graph = CallGraph(nodes=[fn_a, fn_b, fn_c, fn_d], edges=[e1, e2])
+        out_dir = tmp_path / "split"
+
+        written = MermaidRenderer().render_components(graph, out_dir)
+        # index + 2 components
+        component_files = [f for f in written if f.name.startswith("component_")]
+        assert len(component_files) == 2
+
